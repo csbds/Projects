@@ -1,8 +1,8 @@
 The following code can be used to extract workouts from an Apple Health XML file to a CSV file
 import xml.etree.ElementTree as ET
 import csv
-# jkl is a placeholder for the path of the Apple Health xml file on a computer inclusive of the file name
-# rrr is a placeholder for the path of the CSV file output on a computer inclussive of the desired file name 
+# jkl is a placeholder for the path of the Apple Health xml file on a computer inclusive of the file name e.g. '/Users/csbds/Desktop/Fitness Data For Tracking/Data 20260505/export.xml'
+# rrr is a placeholder for the path of the CSV file output on a computer inclusive of the desired file name  e.g.  '/Users/csbds/Desktop/Fitness Data For Tracking/Data 20260505/exportworkoutscreated20260529.csv'
 tree = ET.parse('jkl')
 root = tree.getroot()
 
