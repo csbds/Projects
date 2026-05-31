@@ -1,0 +1,71 @@
+The following code can be used to extract workouts from an Apple Health XML file to a CSV file
+import xml.etree.ElementTree as ET
+import csv
+# jkl is a placeholder for the path of the Apple Health xml file on a computer inclusive of the file name
+# rrr is a placeholder for the path of the CSV file output on a computer inclussive of the desired file name 
+tree = ET.parse('jkl')
+root = tree.getroot()
+
+with open('rrr', "w", newline="", encoding="utf-8") as csvfile:
+
+    fieldnames = [
+        "activity_type",
+        "start_date",
+        "end_date",
+        "duration_min",
+        "active_kcal",
+        "basal_kcal",
+        "avg_hr",
+        "min_hr",
+        "max_hr",
+        "timezone",
+        "avg_mets"
+    ]
+
+    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    writer.writeheader()
+
+    for workout in root.findall("Workout"):
+
+        row = {
+            "activity_type": workout.get("workoutActivityType"),
+            "start_date": workout.get("startDate"),
+            "end_date": workout.get("endDate"),
+            "duration_min": workout.get("duration"),
+            "active_kcal": "",
+            "basal_kcal": "",
+            "avg_hr": "",
+            "min_hr": "",
+            "max_hr": "",
+            "timezone": "",
+            "avg_mets": ""
+        }
+
+        for child in workout:
+
+            if child.tag == "MetadataEntry":
+
+                if child.get("key") == "HKTimeZone":
+                    row["timezone"] = child.get("value")
+
+                elif child.get("key") == "HKAverageMETs":
+                    row["avg_mets"] = child.get("value").split()[0]
+
+            elif child.tag == "WorkoutStatistics":
+
+                stat_type = child.get("type")
+
+                if stat_type == "HKQuantityTypeIdentifierActiveEnergyBurned":
+                    row["active_kcal"] = child.get("sum")
+
+                elif stat_type == "HKQuantityTypeIdentifierBasalEnergyBurned":
+                    row["basal_kcal"] = child.get("sum")
+
+                elif stat_type == "HKQuantityTypeIdentifierHeartRate":
+                    row["avg_hr"] = child.get("average")
+                    row["min_hr"] = child.get("minimum")
+                    row["max_hr"] = child.get("maximum")
+
+        writer.writerow(row)
+
+print("workouts.csv created")
