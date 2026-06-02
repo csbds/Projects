@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+# the following code can be used to parse an entire Itunes Library XML file and produce top 20 genres of music listened in all playlist and a csv file for further analysis
+#    xml_file = r"filelocationofxml.xml" is a placeholder for the location of the Itunes XML library
+#    output_file = r"filelocationofcsv.csv" is a placeholder for the desired location of the output CSV file
+#    genre_pdf = r"filelocationofpdf.pdf"   is a placeholder for the desired location of the PDF output file
+
+
+import plistlib
+import csv
+import argparse
+from datetime import datetime
+
+from collections import Counter
+import matplotlib.pyplot as plt
+from collections import Counter
+import matplotlib.pyplot as plt
+
+
+def create_genre_distribution_pdf(
+    library,
+    pdf_file,
+    count_duplicates_across_playlists=False,
+    top_n=20
+):
+    """
+    Create a PDF containing a horizontal bar chart of the
+    top genres found in playlists.
+    """
+
+    tracks = library.get("Tracks", {})
+    playlists = library.get("Playlists", [])
+
+    genre_counts = Counter()
+    seen_tracks = set()
+
+    for playlist in playlists:
+
+        # Skip master library playlist
+        if playlist.get("Master"):
+            continue
+
+        for item in playlist.get("Playlist Items", []):
+
+            track_id = item.get("Track ID")
+
+            if track_id is None:
+                continue
+
+            # Count each track only once if desired
+            if not count_duplicates_across_playlists:
+                if track_id in seen_tracks:
+                    continue
+                seen_tracks.add(track_id)
+
+            track = tracks.get(str(track_id))
+
+            if track is None:
+                track = tracks.get(track_id)
+
+            if track is None:
+                continue
+
+            genre = track.get("Genre")
+
+            if genre:
+                genre_counts[genre] += 1
+
+    if not genre_counts:
+        print("No genre data found.")
+        return
+
+    # Top N genres only
+    genre_list = genre_counts.most_common(top_n)
+
+    genres = [genre for genre, count in genre_list]
+    counts = [count for genre, count in genre_list]
+
+    # Reverse order so largest genre appears at top
+    genres.reverse()
+    counts.reverse()
+
+    plt.figure(figsize=(12, 8))
+
+    bars = plt.barh(
+        genres,
+        counts,
+        color="steelblue"
+    )
+
+    plt.title(
+        f"Top {top_n} Genres in All Curated Playlists Found in iTunes Library",
+        fontsize=16,
+        pad=15
+    )
+
+    plt.xlabel("Number of Tracks", fontsize=12)
+    plt.ylabel("Genre", fontsize=12)
+
+    # Add count labels to bars
+    for bar in bars:
+        width = bar.get_width()
+        plt.text(
+            width + 1,
+            bar.get_y() + bar.get_height() / 2,
+            str(int(width)),
+            va="center"
+        )
+
+    plt.grid(
+        axis="x",
+        linestyle="--",
+        alpha=0.3
+    )
+
+    plt.tight_layout()
+
+    plt.savefig(pdf_file, format="pdf")
+    plt.close()
+
+    print(f"Genre chart saved to: {pdf_file}")
+
+def load_library(xml_file):
+    with open(xml_file, "rb") as f:
+        return plistlib.load(f)
+
+
+def convert_value(value):
+    """
+    Convert plist values into CSV-friendly values.
+    """
+    if value is None:
+        return ""
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if isinstance(value, (list, dict)):
+        return str(value)
+
+    return value
+
+
+def discover_track_fields(tracks):
+    """
+    Collect every field present in any track and
+    place key fields first.
+    """
+    all_fields = set()
+
+    for track in tracks.values():
+        all_fields.update(track.keys())
+
+    preferred_order = [
+        "Name",
+        "Artist",
+        "Album",
+        "Track ID",
+        "Persistent ID",
+    ]
+
+    ordered_fields = []
+
+    for field in preferred_order:
+        if field in all_fields:
+            ordered_fields.append(field)
+            all_fields.remove(field)
+
+    ordered_fields.extend(sorted(all_fields))
+
+    return ordered_fields
+
+
+def export_normalized_csv(library, output_file, include_unassigned=False):
+
+    tracks = library.get("Tracks", {})
+    playlists = library.get("Playlists", [])
+
+    track_fields = discover_track_fields(tracks)
+
+    csv_fields = ["Playlist Name"]
+
+    csv_fields.extend(track_fields)
+
+    csv_fields.extend([
+    "Playlist Persistent ID",
+    "Playlist ID"
+])
+
+    rows_written = 0
+
+    with open(output_file, "w", newline="", encoding="utf-8-sig") as f:
+
+        writer = csv.DictWriter(
+            f,
+            fieldnames=csv_fields,
+            extrasaction="ignore"
+        )
+
+        writer.writeheader()
+
+        tracks_seen_in_playlist = set()
+
+        for playlist in playlists:
+
+            # Skip the master library playlist
+            if playlist.get("Master"):
+                continue
+
+            playlist_name = playlist.get("Name", "")
+            playlist_id = playlist.get("Playlist ID", "")
+            playlist_pid = playlist.get("Playlist Persistent ID", "")
+
+            for item in playlist.get("Playlist Items", []):
+
+                track_id = item.get("Track ID")
+
+                if track_id is None:
+                    continue
+
+                track = tracks.get(str(track_id))
+
+                if track is None:
+                    track = tracks.get(track_id)
+
+                if track is None:
+                    continue
+
+                tracks_seen_in_playlist.add(track_id)
+
+                row = {
+                    "Playlist Name": playlist_name,
+                    "Playlist ID": playlist_id,
+                    "Playlist Persistent ID": playlist_pid,
+                }
+
+                for field in track_fields:
+                    row[field] = convert_value(track.get(field))
+
+                writer.writerow(row)
+                rows_written += 1
+
+        #
+        # Optional: export tracks not found in any playlist
+        #
+        if include_unassigned:
+
+            for _, track in tracks.items():
+
+                track_id = track.get("Track ID")
+
+                if track_id in tracks_seen_in_playlist:
+                    continue
+
+                row = {
+                    "Playlist Name": "",
+                    "Playlist ID": "",
+                    "Playlist Persistent ID": "",
+                }
+
+                for field in track_fields:
+                    row[field] = convert_value(track.get(field))
+
+                writer.writerow(row)
+                rows_written += 1
+
+    print(f"Rows written: {rows_written}")
+    print(f"Track fields discovered: {len(track_fields)}")
+    print(f"Output: {output_file}")
+
+
+
+def main():
+
+    xml_file = r"filelocationofxml.xml"
+    output_file = r"filelocationofcsv.csv"
+
+    genre_pdf = r"filelocationofpdf.pdf"
+
+    library = load_library(xml_file)
+
+    export_normalized_csv(
+        library,
+        output_file,
+        include_unassigned=True
+    )
+
+    create_genre_distribution_pdf(
+        library,
+        genre_pdf,
+        count_duplicates_across_playlists=False,
+        top_n=20
+)
+
+if __name__ == "__main__":
+    main()
+
