@@ -1,0 +1,512 @@
+# The following python script can be used to predict the future usage of memory on a Mac using the current accumulated usage
+# The predictive model used is a Prophet model.
+# OUTPUT_CSV = Path("desiredcsvoutputpath.csv") <= this field below is a placholder replace below with the desired output location of the CSV containing file creation date and accumulated storage inclusive of the file's name.
+# INPUT_CSV = "desiredcsvoutputpath.csv" <= this contains the information about the first csv file created containing raw data.
+# OUTPUT_FORECAST_CSV = ("desiredcsvforecastoutputpath.csv") <= this field below is a placholder replace below with the desired output location of the CSV containing the predicted values output.
+# OUTPUT_PDF = ("desiredpathofvisualizedoutput.pdf) <= this field below is a placholder replace below with the desired output location of the PDF visualizations inclusive of the file's name.
+
+
+from pathlib import Path
+from datetime import datetime
+import pandas as pd
+import time
+
+# =====================================================
+# CONFIGURATION
+# =====================================================
+
+# Root folder to scan
+SCAN_ROOT = Path.home() # change this to whatever folder desired. Not all parts of a mac are scannable
+
+
+# To get a specific folder use SCAN_ROOT = Path(folderlocation)
+
+
+# CSV output location
+OUTPUT_CSV = Path("desiredcsvoutputpath.csv")
+
+# Maximum runtime in seconds
+# Examples:
+# 300  = 5 minutes
+# 1800 = 30 minutes
+# 3600 = 1 hour
+MAX_RUNTIME_SECONDS = 60
+
+# =====================================================
+# START TIMER
+# =====================================================
+
+start_time = time.time()
+
+# =====================================================
+# COLLECT FILE DATA
+# =====================================================
+
+records = []
+files_scanned = 0
+
+print(f"Scanning: {SCAN_ROOT}")
+print(f"Maximum runtime: {MAX_RUNTIME_SECONDS} seconds")
+
+for file_path in SCAN_ROOT.rglob("*"):
+
+    # Stop if runtime exceeded
+    if time.time() - start_time > MAX_RUNTIME_SECONDS:
+        print("\nMaximum runtime reached.")
+        break
+
+    try:
+        if not file_path.is_file():
+            continue
+
+        stat = file_path.stat()
+
+        size_mb = round(
+            stat.st_size / (1024 * 1024),
+            4
+        )
+
+        created = datetime.fromtimestamp(
+            stat.st_birthtime
+        )
+
+        modified = datetime.fromtimestamp(
+            stat.st_mtime
+        )
+
+        records.append({
+            "file_name": file_path.name,
+            "file_location": str(file_path),
+            "size_mb": size_mb,
+            "creation_date": created,
+            "modification_date": modified
+        })
+
+        files_scanned += 1
+
+        if files_scanned % 10000 == 0:
+            elapsed = round(
+                time.time() - start_time,
+                1
+            )
+
+            print(
+                f"Files scanned: {files_scanned:,} "
+                f"Elapsed: {elapsed}s"
+            )
+
+    except (
+        PermissionError,
+        FileNotFoundError,
+        OSError
+    ):
+        continue
+
+print(f"\nFiles collected: {len(records):,}")
+
+# =====================================================
+# CREATE DATAFRAME
+# =====================================================
+
+df = pd.DataFrame(records)
+
+if len(df) == 0:
+    raise RuntimeError(
+        "No files collected."
+    )
+
+# =====================================================
+# CUMULATIVE STORAGE BY CREATION DATE
+# =====================================================
+
+creation_sorted = (
+    df.sort_values("creation_date")
+      .copy()
+)
+
+creation_sorted[
+    "cumulative_storage_by_creation_mb"
+] = (
+    creation_sorted["size_mb"]
+    .cumsum()
+    .round(4)
+)
+
+creation_lookup = creation_sorted[
+    [
+        "file_location",
+        "cumulative_storage_by_creation_mb"
+    ]
+]
+
+# =====================================================
+# CUMULATIVE STORAGE BY MODIFICATION DATE
+# =====================================================
+
+mod_sorted = (
+    df.sort_values("modification_date")
+      .copy()
+)
+
+mod_sorted[
+    "cumulative_storage_by_modification_mb"
+] = (
+    mod_sorted["size_mb"]
+    .cumsum()
+    .round(4)
+)
+
+mod_lookup = mod_sorted[
+    [
+        "file_location",
+        "cumulative_storage_by_modification_mb"
+    ]
+]
+
+# =====================================================
+# MERGE RESULTS
+# =====================================================
+
+df = df.merge(
+    creation_lookup,
+    on="file_location",
+    how="left"
+)
+
+df = df.merge(
+    mod_lookup,
+    on="file_location",
+    how="left"
+)
+
+# =====================================================
+# SAVE CSV
+# =====================================================
+
+OUTPUT_CSV.parent.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+df.to_csv(
+    OUTPUT_CSV,
+    index=False
+)
+
+# =====================================================
+# SUMMARY
+# =====================================================
+
+elapsed = round(
+    time.time() - start_time,
+    2
+)
+
+total_storage_mb = round(
+    df["size_mb"].sum(),
+    2
+)
+
+print("\nCompleted")
+print(f"Runtime: {elapsed} seconds")
+print(f"Files written: {len(df):,}")
+print(f"Storage represented: {total_storage_mb:,.2f} MB")
+print(f"CSV location: {OUTPUT_CSV}")
+
+
+import pandas as pd
+from prophet import Prophet
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+
+# =====================================================
+# CONFIGURATION
+# =====================================================
+
+INPUT_CSV = "desiredcsvoutputpath.csv"
+
+OUTPUT_FORECAST_CSV = (
+    "desiredcsvforecastoutputpath.csv.csv"
+)
+
+OUTPUT_PDF = (
+    "desiredpathofvisualizedoutput.pdf"
+)
+
+FORECAST_DAYS = 365
+
+# Storage Capacity
+MAX_STORAGE_CAPACITY_GB = 225
+MAX_STORAGE_CAPACITY_MB = (
+    MAX_STORAGE_CAPACITY_GB * 1024
+)
+
+# =====================================================
+# LOAD DATA
+# =====================================================
+
+print("Loading data...")
+
+df = pd.read_csv(INPUT_CSV)
+
+# Prophet expects:
+# ds = datetime column
+# y  = target column
+
+prophet_df = pd.DataFrame({
+    "ds": pd.to_datetime(
+        df["creation_date"],
+        errors="coerce"
+    ),
+    "y": df["cumulative_storage_by_creation_mb"]
+})
+
+# Remove invalid dates
+prophet_df = prophet_df.dropna(subset=["ds"])
+
+# Sort chronologically
+prophet_df = (
+    prophet_df
+    .sort_values("ds")
+    .drop_duplicates(subset=["ds"])
+)
+
+# Logistic growth requires cap
+prophet_df["cap"] = MAX_STORAGE_CAPACITY_MB
+
+print(
+    f"Loaded {len(prophet_df):,} records"
+)
+
+# =====================================================
+# TRAIN MODEL
+# =====================================================
+
+print("Training Prophet model...")
+
+model = Prophet(
+    growth="logistic",
+    yearly_seasonality=True,
+    weekly_seasonality=False,
+    daily_seasonality=False,
+    interval_width=0.95,
+    changepoint_prior_scale=0.05
+)
+
+model.fit(prophet_df)
+
+# =====================================================
+# BUILD FUTURE DATAFRAME
+# =====================================================
+
+future = model.make_future_dataframe(
+    periods=FORECAST_DAYS,
+    freq="D"
+)
+
+future["cap"] = MAX_STORAGE_CAPACITY_MB
+
+# =====================================================
+# FORECAST
+# =====================================================
+
+print(
+    f"Generating {FORECAST_DAYS}-day forecast..."
+)
+
+forecast = model.predict(future)
+
+# =====================================================
+# CONVERT MB TO GB FOR REPORTING
+# =====================================================
+
+forecast["yhat_gb"] = (
+    forecast["yhat"] / 1024
+)
+
+forecast["yhat_lower_gb"] = (
+    forecast["yhat_lower"] / 1024
+)
+
+forecast["yhat_upper_gb"] = (
+    forecast["yhat_upper"] / 1024
+)
+
+# =====================================================
+# SAVE FORECAST CSV
+# =====================================================
+
+forecast[
+    [
+        "ds",
+        "yhat_gb",
+        "yhat_lower_gb",
+        "yhat_upper_gb"
+    ]
+].to_csv(
+    OUTPUT_FORECAST_CSV,
+    index=False
+)
+
+print(
+    f"Forecast CSV saved to:\n"
+    f"{OUTPUT_FORECAST_CSV}"
+)
+
+# =====================================================
+# CAPACITY THRESHOLD ANALYSIS
+# =====================================================
+
+thresholds = {
+    "80%": 225 * 0.80,
+    "90%": 225 * 0.90,
+    "100%": 225
+}
+
+threshold_dates = {}
+
+for label, threshold in thresholds.items():
+
+    crossed = forecast[
+        forecast["yhat_gb"] >= threshold
+    ]
+
+    if len(crossed) > 0:
+        threshold_dates[label] = (
+            crossed.iloc[0]["ds"]
+        )
+    else:
+        threshold_dates[label] = None
+
+# =====================================================
+# CREATE PDF REPORT
+# =====================================================
+
+with PdfPages(OUTPUT_PDF) as pdf:
+
+    # ---------------------------------
+    # Forecast Plot
+    # ---------------------------------
+
+    plt.figure(figsize=(14, 8))
+
+    plt.plot(
+        forecast["ds"],
+        forecast["yhat_gb"],
+        label="Forecast",
+        linewidth=2
+    )
+
+    plt.fill_between(
+        forecast["ds"],
+        forecast["yhat_lower_gb"],
+        forecast["yhat_upper_gb"],
+        alpha=0.2,
+        label="95% Confidence Interval"
+    )
+
+    plt.axhline(
+        225,
+        color="red",
+        linestyle="-",
+        linewidth=2,
+        label="225 GB Capacity"
+    )
+
+    plt.axhline(
+        225 * 0.90,
+        color="orange",
+        linestyle="--",
+        label="90% Capacity"
+    )
+
+    plt.axhline(
+        225 * 0.80,
+        color="green",
+        linestyle="--",
+        label="80% Capacity"
+    )
+
+    plt.title(
+        "365-Day Storage Forecast"
+    )
+
+    plt.xlabel("Date")
+    plt.ylabel("Storage Usage (GB)")
+    plt.legend()
+    plt.grid(True)
+
+    pdf.savefig()
+    plt.close()
+
+    # ---------------------------------
+    # Prophet Component Plot
+    # ---------------------------------
+
+    fig = model.plot_components(
+        forecast
+    )
+
+    pdf.savefig(fig)
+    plt.close()
+
+print(
+    f"PDF report saved to:\n"
+    f"{OUTPUT_PDF}"
+)
+
+# =====================================================
+# FORECAST SUMMARY
+# =====================================================
+
+current_storage_gb = (
+    prophet_df["y"].max() / 1024
+)
+
+forecast_storage_gb = (
+    forecast["yhat_gb"].iloc[-1]
+)
+
+growth_gb = (
+    forecast_storage_gb -
+    current_storage_gb
+)
+
+print("\n")
+print("=" * 50)
+print("STORAGE FORECAST SUMMARY")
+print("=" * 50)
+
+print(
+    f"Current Storage : "
+    f"{current_storage_gb:,.2f} GB"
+)
+
+print(
+    f"Forecast Storage: "
+    f"{forecast_storage_gb:,.2f} GB"
+)
+
+print(
+    f"Projected Growth: "
+    f"{growth_gb:,.2f} GB"
+)
+
+print("\nCapacity Threshold Dates")
+
+for label, date in threshold_dates.items():
+
+    if date is not None:
+        print(
+            f"{label}: "
+            f"{date.strftime('%Y-%m-%d')}"
+        )
+    else:
+        print(
+            f"{label}: "
+            "Not reached during forecast"
+        )
+
+print("=" * 50)
+
+
