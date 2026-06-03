@@ -1,0 +1,198 @@
+# The following Python code can be used to monitor the amount of time that specific application are used on a Macbook
+# "DesiredLocationofCSVfile.csv" is a placeholder for the location that the output CSV will be stored
+#!/usr/bin/env python3
+
+import subprocess
+import time
+import csv
+import os
+from datetime import datetime
+
+# ==================================
+# CONFIGURATION
+# ==================================
+
+CSV_FILE = "DesiredLocationofCSVfile.csv"
+
+POLL_INTERVAL = 5          # seconds
+MAX_RUNTIME_SECONDS = 60 # seconds
+
+# ==================================
+# FUNCTIONS
+# ==================================
+
+def get_frontmost_app():
+    applescript = """
+    tell application "System Events"
+        get name of first application process whose frontmost is true
+    end tell
+    """
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", applescript],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip()
+
+    except Exception as e:
+        print(f"Error detecting app: {e}")
+        return None
+
+
+def load_existing_data():
+
+    data = {}
+
+    if not os.path.exists(CSV_FILE):
+        return data
+
+    try:
+        with open(CSV_FILE, "r", newline="") as file:
+
+            reader = csv.DictReader(file)
+
+            for row in reader:
+                data[row["Application"]] = {
+                    "seconds": float(row["Seconds"]),
+                    "first_seen": row["FirstSeen"],
+                    "last_seen": row["LastSeen"]
+                }
+
+    except Exception as e:
+        print(f"Could not load existing CSV: {e}")
+
+    return data
+
+
+def save_csv(data):
+
+    directory = os.path.dirname(CSV_FILE)
+
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with open(CSV_FILE, "w", newline="") as file:
+
+        writer = csv.writer(file)
+
+        writer.writerow([
+            "Application",
+            "Seconds",
+            "FirstSeen",
+            "LastSeen"
+        ])
+
+        for app, info in sorted(
+            data.items(),
+            key=lambda x: x[1]["seconds"],
+            reverse=True
+        ):
+
+            writer.writerow([
+                app,
+                round(info["seconds"], 2),
+                info["first_seen"],
+                info["last_seen"]
+            ])
+
+
+def update_app_usage(data, app_name, elapsed_seconds):
+
+    if not app_name:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if app_name not in data:
+
+        data[app_name] = {
+            "seconds": elapsed_seconds,
+            "first_seen": now,
+            "last_seen": now
+        }
+
+    else:
+
+        data[app_name]["seconds"] += elapsed_seconds
+        data[app_name]["last_seen"] = now
+
+
+def print_report(data):
+
+    print("\n===== APPLICATION USAGE =====\n")
+
+    for app, info in sorted(
+        data.items(),
+        key=lambda x: x[1]["seconds"],
+        reverse=True
+    ):
+
+        print(
+            f"{app:<30}"
+            f"{info['seconds']:>12.2f} seconds   "
+            f"{info['first_seen']} -> {info['last_seen']}"
+        )
+
+
+# ==================================
+# MAIN
+# ==================================
+
+def main():
+
+    data = load_existing_data()
+
+    print("Application Usage Tracker")
+    print(f"Output CSV : {CSV_FILE}")
+    print(f"Runtime    : {MAX_RUNTIME_SECONDS} seconds")
+    print(f"Poll Rate  : {POLL_INTERVAL} seconds")
+    print()
+
+    start_time = time.time()
+
+    last_app = get_frontmost_app()
+    last_timestamp = start_time
+
+    try:
+
+        while True:
+
+            time.sleep(POLL_INTERVAL)
+
+            current_time = time.time()
+
+            elapsed = current_time - last_timestamp
+
+            update_app_usage(
+                data,
+                last_app,
+                elapsed
+            )
+
+            save_csv(data)
+
+            if current_time - start_time >= MAX_RUNTIME_SECONDS:
+                print("Time limit reached.")
+                break
+
+            last_app = get_frontmost_app()
+            last_timestamp = current_time
+
+    except KeyboardInterrupt:
+        print("\nTracking stopped by user.")
+
+    finally:
+
+        save_csv(data)
+
+        print_report(data)
+
+        print("\nResults saved to:")
+        print(CSV_FILE)
+
+
+if __name__ == "__main__":
+    main()
