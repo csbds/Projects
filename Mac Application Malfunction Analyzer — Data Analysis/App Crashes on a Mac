@@ -1,0 +1,127 @@
+# The following python code can be used to collect data regarding application malfunctions on a Macbook
+# OUTPUT_CSV = "desiredlocationofcsvoutput.csv" <= This is a  placeholder, edit this below to store the CSV at a particular location
+# TIME_WINDOW_SECONDS = 120  # change this freely to determine how long you want the python script to run denoted in seconds
+import subprocess
+import time
+import re
+from pathlib import Path
+import pandas as pd
+
+# ============================================================
+# CONFIG
+# ============================================================
+TIME_WINDOW_SECONDS = 120  # change this freely
+
+OUTPUT_CSV = "desiredlocationofcsvoutput.csv"
+
+# ============================================================
+# CLEAN TIMESTAMP FUNCTION
+# Removes timezone like -0400 and extra host info
+# ============================================================
+def clean_timestamp(ts_parts):
+    raw = " ".join(ts_parts)
+
+    # Remove timezone offsets like -0400 or +0200
+    raw = re.sub(r"\s[+-]\d{4}", "", raw)
+
+    # Remove "localhost" or similar noise if it appears
+    raw = raw.replace("localhost", "").strip()
+
+    return raw
+
+# ============================================================
+# LIVE LOG STREAM
+# ============================================================
+def collect_events(window_seconds):
+
+    cmd = [
+        "log", "stream",
+        "--style", "syslog",
+        "--predicate",
+        'eventMessage CONTAINS[c] "crash" OR '
+        'eventMessage CONTAINS[c] "crashed" OR '
+        'eventMessage CONTAINS[c] "hang" OR '
+        'eventMessage CONTAINS[c] "force quit" OR '
+        'eventMessage CONTAINS[c] "killed" OR '
+        'eventMessage CONTAINS[c] "SIGABRT" OR '
+        'eventMessage CONTAINS[c] "SIGSEGV" OR '
+        'eventMessage CONTAINS[c] "EXC_"'
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True
+    )
+
+    events = []
+    start = time.time()
+
+    for line in proc.stdout:
+
+        if time.time() - start > window_seconds:
+            proc.terminate()
+            break
+
+        low = line.lower()
+
+        event_type = None
+
+        if "crash" in low:
+            event_type = "CRASH"
+        elif "hang" in low:
+            event_type = "HANG"
+        elif "force quit" in low:
+            event_type = "FORCE_QUIT"
+        elif "killed" in low:
+            event_type = "KILLED"
+        elif "sigabrt" in low:
+            event_type = "SIGABRT"
+        elif "sigsegv" in low:
+            event_type = "SIGSEGV"
+        elif "exc_" in low:
+            event_type = "EXCEPTION"
+        else:
+            continue
+
+        parts = line.split()
+
+        if len(parts) < 5:
+            continue
+
+        timestamp = clean_timestamp(parts[0:3])
+        app = parts[4]
+
+        events.append({
+            "Timestamp": timestamp,
+            "Application": app,
+            "EventType": event_type,
+            "Source": "log_stream"
+        })
+
+    return events
+
+# ============================================================
+# RUN
+# ============================================================
+print(f"Collecting events for {TIME_WINDOW_SECONDS} seconds...")
+
+events = collect_events(TIME_WINDOW_SECONDS)
+
+df = pd.DataFrame(events)
+
+if df.empty:
+    print("No events captured.")
+    exit()
+
+# ============================================================
+# SAVE (no WindowSeconds column)
+# ============================================================
+output_path = Path(OUTPUT_CSV)
+output_path.parent.mkdir(parents=True, exist_ok=True)
+
+df.to_csv(output_path, index=False)
+
+print(f"Saved: {output_path}")
+print(f"Events captured: {len(df)}")
